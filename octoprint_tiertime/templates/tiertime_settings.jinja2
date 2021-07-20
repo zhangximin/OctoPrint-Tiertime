@@ -1,15 +1,17 @@
-<h3>Tiertime Printers</h3>
+<h3>Tiertime Printer</h3>
 
 <form class="form-horizontal" onsubmit="return false;">
     <div class="control-group">
         <div class="controls">
             <label class="checkbox">
-                <input type="checkbox" data-bind="checked: settings.plugins.tier_printer.enabled"> {{ _('Enable the tiertime printer') }}
+                <input type="checkbox" data-bind="checked: settings.plugins.tiertime.enabled"> {{ _('Enable the tiertime printer') }}
                 <span class="help-block">{{ _('If enabled, an additional serial port <code>TIER-[SN]</code> will be available for connecting, backed by WanderService provied by Tiertime.') }}</span>
             </label>
-            <div class="input-append">
-                <input type="text" class="input-xxlarge" data-bind="value: settings.plugins.tier_printer.wand_host">                
-            </div>
         </div>
-    </div>
+        <label class="control-label">{{ _('WandServer :') }}</label>
+        <div class="controls">            
+            <input type="text" class="input-block-level" data-bind="value: settings.plugins.tiertime.wand_host">
+            <span class="help-block">{{ _('Websocket address of WandServer. If comes from docker, it will be like ws://localhost:3333') }}</span>
+        </div>
+    </div>    
 </form>

@@ -179,13 +179,9 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
 
     def get_additional_port_names(self, *args, **kwargs):
         global g_ws
-        self._logger.info("+++++++++++++++Step 1++++++++++++++++++++++")
-        if self._settings.get_boolean(["enabled"]):
-            self._logger.info("+++++++++++++++Step 2++++++++++++++++++++++")
-            if g_ws is None:
-                self._logger.info("+++++++++++++++Step 3++++++++++++++++++++++")
-                g_ws = wandServer(self._settings, self._identifier)
-                self._logger.info("+++++++++++++++Step 4++++++++++++++++++++++")
+        if self._settings.get_boolean(["enabled"]):            
+            if g_ws is None:                
+                g_ws = wandServer(self._settings, self._identifier)                
                 g_ws.connect()
                 g_ws.start_action()
             else:
@@ -282,8 +278,8 @@ __plugin_name__ = "Tiertime"
 # Python 2. New plugins should make sure to run under both versions for now. Uncomment one of the following
 # compatibility flags according to what Python versions your plugin supports!
 #__plugin_pythoncompat__ = ">=2.7,<3" # only python 2
-#__plugin_pythoncompat__ = ">=3,<4" # only python 3
-__plugin_pythoncompat__ = ">=2.7,<4" # python 2 and 3
+__plugin_pythoncompat__ = ">=3,<4" # only python 3
+#__plugin_pythoncompat__ = ">=2.7,<4" # python 2 and 3
 
 def __plugin_load__():
     global __plugin_implementation__

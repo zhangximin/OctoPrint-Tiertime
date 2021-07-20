@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import, division, print_function, unicode_literals
+from sys import flags
 
 __author__ = "Simon Cheung <simon@tiertime.net>"
 __license__ = "GNU Affero General Public License http://www.gnu.org/licenses/agpl.html"
@@ -7,7 +8,6 @@ __license__ = "GNU Affero General Public License http://www.gnu.org/licenses/agp
 import collections
 import io
 import json
-import math
 import os
 import re
 import threading
@@ -25,10 +25,8 @@ except ImportError:
 
 # noinspection PyCompatibility
 from typing import Any
-
 from past.builtins import basestring
 from serial import SerialTimeoutException
-
 from octoprint.plugin import plugin_manager
 from octoprint.util import (
     RepeatedTimer,
@@ -37,9 +35,7 @@ from octoprint.util import (
     to_bytes,
     to_unicode,
 )
-
 from datetime import datetime
-from datetime import date
 from .wand import wandServer
 
 # noinspection PyBroadException
@@ -56,36 +52,40 @@ class TierPrinter(object):
     select_sd_regex = re.compile(r"select_sd (.*)")
     resend_ratio_regex = re.compile(r"resend_ratio (\d+)")
 
+    def get_total_seconds(self, stringHMS):
+        timedeltaObj = datetime.strptime(stringHMS, "%H:%M:%S") - datetime(1900,1,1)
+        return timedeltaObj.total_seconds()
+
     def __init__(
         self,
         settings,
-        ___ws: wandServer,
+        g_ws: wandServer,
         port,
         data_folder,
         seriallog_handler=None,
-        read_timeout=5.0,
+        read_timeout=60.0,
         write_timeout=10.0,
         faked_baudrate=115200,
     ):
-        import logging
 
+        import logging
+        
         self._logger = logging.getLogger(
-            "octoprint.plugins.tier_printer.TierPrinter"
+            "octoprint.plugins.tiertime.TierPrinter"
         )
 
         self._settings = settings
         
-        self._ws = ___ws
+        self._ws = g_ws
         self._port = port
-        self._sn = port[5:len(port)]
-        self._logger.info("sn:"+self._sn)
+        self._sn = port[5:len(port)]        
         self._ws.connect_tier_printer(self._sn)
-
+        
         self._faked_baudrate = faked_baudrate
         self._plugin_data_folder = data_folder
         
         self._seriallog = logging.getLogger(
-            "octoprint.plugin.tier_printer.TierPrinter.serial"
+            "octoprint.plugin.tiertime.TierPrinter.serial"
         )
         self._seriallog.setLevel(logging.CRITICAL)
         self._seriallog.propagate = False
@@ -152,13 +152,16 @@ class TierPrinter(object):
         self._feedrate_multiplier = 100
         self._flowrate_multiplier = 100
 
+        self._sdPrinting = False
         self._virtualSd = self._settings.global_get_basefolder("virtualSd")        
         self._sdCardReady = True
         self._sdPrinter = None
         self._sdPrintingSemaphore = threading.Event()
         self._selectedSdFile = None
-        self._selectedSdFileSize = None
-        self._selectedSdFilePos = None
+        self._selectedSdFileSize = 0
+        self._selectedSdFilePos = 0
+        self._selectedSdJobID = 0
+        self._sdPrint_needStart = True
 
         self._writingToSd = False
         self._writingToSdHandle = None
@@ -221,10 +224,6 @@ class TierPrinter(object):
 
         self._debug_drop_connection = False
 
-        # self._action_hooks = plugin_manager().get_hooks(
-        #     "octoprint.plugin.tier_printer.custom_action"
-        # )
-
         self._killed = False
 
         self._triggerResendAt100 = True
@@ -235,33 +234,34 @@ class TierPrinter(object):
         self._canceling = False
 
         counter = 0
-        while counter < self.timeout and self.extruderCount < 1:
+        while counter < 60 and self.extruderCount < 1:
             time.sleep(1)
             self.extruderCount = self._ws.get_printer_extruderCount(self._sn)
             counter += 1
         if self.extruderCount < 1:
             #No status, connect error!
+            self._logger.critical("Get Printer Status error!")
             self._kill()
             return None
 
         readThread = threading.Thread(
             target=self._processIncoming,
-            name="octoprint.plugins.tier_printer.wait_thread",
+            name="octoprint.plugins.tiertime.wait_thread",
         )
         readThread.start()
 
         bufferThread = threading.Thread(
             target=self._processBuffer,
-            name="octoprint.plugins.tier_printer.buffer_thread",
+            name="octoprint.plugins.tiertime.buffer_thread",
         )
         bufferThread.start()
 
-    def __str__(self):
-        return "TIER(read_timeout={read_timeout},write_timeout={write_timeout},options={options})".format(
-            read_timeout=self._read_timeout,
-            write_timeout=self._write_timeout,
-            options=self._settings.get([]),
-        )
+    # def __str__(self):
+    #     return "TIER(read_timeout={read_timeout},write_timeout={write_timeout},options={options})".format(
+    #         read_timeout=self._read_timeout,
+    #         write_timeout=self._write_timeout,
+    #         options=self._settings.get([]),
+    #     )
 
     def _calculate_resend_every_n(self, resend_ratio):
         self._resend_every_n = (100 // resend_ratio) if resend_ratio else 0
@@ -286,9 +286,10 @@ class TierPrinter(object):
                 self._sdPrintingSemaphore.set()
             self._sdPrinter = None
             self._selectedSdFile = None
-            self._selectedSdFileSize = None
-            self._selectedSdFilePos = None
-            self._selectedSdJobID = None
+            self._selectedSdFileSize = 0
+            self._selectedSdFilePos = 0
+            self._selectedSdJobID = 0
+            self._sdPrint_needStart = True
 
             # read eeprom from disk
             if self._virtual_eeprom:
@@ -434,19 +435,24 @@ class TierPrinter(object):
                 continue
 
             # track N = N + 1
-            # if data.startswith(b"N") and b"M110" in data:
-            #     linenumber = int(re.search(b"N([0-9]+)", data).group(1))
+            if data.startswith(b"N") and b"M110" in data:
+                if self._sdPrinting:
+                    self._send(
+                        "SD printing byte %d/%d"
+                            % (self._selectedSdFilePos, self._selectedSdFileSize)
+                    )
+                else:
+                    linenumber = int(re.search(b"N([0-9]+)", data).group(1))
 
-            #     self.lastN = linenumber
-            #     self.current_line = linenumber
+                    self.lastN = linenumber
+                    self.current_line = linenumber
 
-            #     self._triggerResendAt100 = True
-            #     self._triggerResendWithTimeoutAt105 = True
+                    self._triggerResendAt100 = True
+                    self._triggerResendWithTimeoutAt105 = True
 
-            #     self._sendOk()
-            #     continue
-            # elif data.startswith(b"N"):
-            if data.startswith(b"N"):
+                self._sendOk()
+                continue
+            elif data.startswith(b"N"):            
                 linenumber = int(re.search(b"N([0-9]+)", data).group(1))
                 expected = self.lastN + 1
                 if linenumber != expected:
@@ -504,12 +510,12 @@ class TierPrinter(object):
 
             data = to_unicode(data, encoding="ascii", errors="replace").strip()
 
-            # if data.startswith("!!DEBUG:") or data.strip() == "!!DEBUG":
-            #     debug_command = ""
-            #     if data.startswith("!!DEBUG:"):
-            #         debug_command = data[len("!!DEBUG:") :].strip()
-            #     self._debugTrigger(debug_command)
-            #     continue
+            if data.startswith("!!DEBUG:") or data.strip() == "!!DEBUG":
+                debug_command = ""
+                if data.startswith("!!DEBUG:"):
+                    debug_command = data[len("!!DEBUG:") :].strip()
+                self._debugTrigger(debug_command)
+                continue
 
             if self._resend_every_n and self._received_lines % self._resend_every_n == 0:
                 self._triggerResend(checksum=True)
@@ -580,6 +586,10 @@ class TierPrinter(object):
             if len(data.strip()) > 0 and not self._okBeforeCommandOutput:
                 self._sendOk()
 
+            if self._ws._lastError is not None:
+                self._send("// action:notification "+ self._ws._lastError)
+                self._ws._lastError = None
+
         self._logger.info("Closing down read loop")
 
         self._ws.disconnect_tier_printer(self._sn)
@@ -605,6 +615,9 @@ class TierPrinter(object):
         else:
             self._send(self._error("command_unknown", "F"))
             return True
+
+    def _gcode_M18(self, data):
+        self._motorsOff()
 
     def _gcode_M104(self, data):
         # type: (str) -> None
@@ -648,7 +661,7 @@ class TierPrinter(object):
     def _gcode_M21(self, data):
         # type: (str) -> None        
         self._sdCardReady = True
-        self._send("SD card ok")
+        self._send("SD card ok")        
         #self._send("No SD card")
 
     # noinspection PyUnusedLocal
@@ -666,6 +679,7 @@ class TierPrinter(object):
     def _gcode_M24(self, data):
         # type: (str) -> None
         if self._sdCardReady:
+            self._sdPrint_needStart = True
             self._startSdPrint()
 
     # noinspection PyUnusedLocal
@@ -1163,6 +1177,10 @@ class TierPrinter(object):
             for key, value in self._parse_eeprom_params("PID", data).items():
                 self._virtual_eeprom.eeprom["pid_bed"]["params"][key] = float(value)
 
+    def _gcode_M106(self, data):        
+        #Fan on/off
+        pass
+    
     # EEPROM Helpers
 
     def _construct_eeprom_values(self):
@@ -1388,8 +1406,7 @@ class TierPrinter(object):
             self._send("// Entering rerequest loop")
             self._rerequest_last = True
         elif data == "cancel_sd":
-            if self._sdPrinting and self._sdPrinter:
-                self._logger.info("22222222222222222222222222222222222222222222222222")
+            if self._sdPrinting and self._sdPrinter:                
                 #self._pauseSdPrint()
                 self._sdPrinting = False
                 self._sdPrintingSemaphore.set()
@@ -1462,6 +1479,7 @@ class TierPrinter(object):
             except Exception:
                 self._logger.exception("While handling %r", data)
 
+    
     def _listSd(self):
         if self._settings.get_boolean(["sdFiles", "size"]):
             if self._settings.get_boolean(["sdFiles", "longname"]):
@@ -1474,6 +1492,21 @@ class TierPrinter(object):
         files = self._mappedSdList()
         items = map(lambda x: line.format(**x), files.values())
 
+        #Sync sd printing state
+        tStatus = self._ws.get_printer_status(self._sn)
+        if tStatus is not None and tStatus.printing == True and self._sdPrinter is None:
+            self._ws._isPrinting = True
+            self._sdCardReady = True
+            self._sdPrinting = True
+            self._sdPrint_needStart = False
+            
+            if tStatus.remainPercent == 0:
+                tStatus.remainPercent = 0.1
+
+            self._selectedSdFileSize = self.get_total_seconds(tStatus.remainTime) / tStatus.remainPercent
+            self._setBusy()
+            self._startSdPrint()
+
         self._send("Begin file list")
         for item in items:
             self._send(item)
@@ -1482,67 +1515,72 @@ class TierPrinter(object):
     def _mappedSdList(self):
         # type: () -> collections.OrderedDict
         result = collections.OrderedDict()
-                
-        # for entry in scandir(self._virtualSd):
-        #     if not entry.is_file():
-        #         continue
-        #     dosname = get_dos_filename(
-        #         entry.name, existing_filenames=list(result.keys())
-        #     ).lower()
-        
-        #     dosname = "abc.tsk"
-
-        #     result[dosname] = {
-        #         "name": entry.name,
-        #         "path": "/",
-        #         "dosname": dosname,
-        #         "size": entry.stat().st_size,
-        #     }
         
         joblist = self._ws.get_job_list(self._sn)
-        if joblist is not None:            
-            for job in joblist["list"]:
-                name = job["taskname"]
-                #name = job["modelname_list"][0]
-                #path = self._virtualSd
-                #dosname = get_dos_filename(job["taskname_list"][0], existing_filenames=list(result.keys())).lower()
-                dosname = name + ".tsk"
+        
+        if joblist is None:
+            t_status = self._ws.get_printer_status(self._sn)
+            if t_status is not None and t_status.printing:
+                #Hippo/Willow will not print without job.
+                joblist = {"list": [{"taskname":"PrintingJob.tsk","jobid":9,"jobstatus": 1, "printtimes":3600, "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}]}
 
+        if joblist is not None:
+            for job in joblist["list"]:
+                name = job["taskname"]                
                 jobid = job["jobid"]
+                jobstatus = job["jobstatus"]
                 printtimes = job["printtimes"]                
                 uploaded = job["date"]
-                #uplaod_time =  time.mktime(time.strptime(s_date, "%Y-%m-%d %H:%M:%S"))
-                                                                
+
+                if name in result or name + ".tsk" in result:
+                    name = os.path.basename(name) + "_" + str(jobid) + "_"
+
+                if not name.endswith(".tsk"):
+                    dosname = name + ".tsk"
+                else:
+                    dosname = name
+                
+                uplaod_time =  time.mktime(time.strptime(uploaded, "%Y-%m-%d %H:%M:%S"))
+
+                # jobstatus 0: JOB_WAITING 1: JOB_PRINTING 2: JOB_FAILED 3: JOB_FINISHED 4: JOB_DELETED/History
+                if jobstatus == 1:                    
+                    self._selectedSdFile = dosname
+                    self._selectedSdFileSize = printtimes
+                    self._selectedSdJobID = jobid
+
+                    if self._settings.get_boolean(["includeFilenameInOpened"]):
+                        self._send("File opened: %d  Size: %d" % (jobid, self._selectedSdFileSize))
+                    else:
+                        self._send("File opened")
+                    self._send("File selected")
+                                                
                 result[dosname] = {
-                   "name": dosname,
+                   "name": name,
                    "path": dosname,
                    "dosname": dosname,
                    "size": printtimes,
                    "jobid": jobid,
-                   "uploaded": uploaded,
+                   "uploaded": uplaod_time
                 }
                 
         return result
 
     def _selectSdFile(self, filename, check_already_open=False):
         # type: (str, bool) -> None
-                
+
+        self._selectedSdFile = None
+        self._selectedSdFilePos = 0
+        self._selectedSdFileSize = 0
+        self._selectedSdJobID = 0
+                        
         if filename.startswith("/"):
             filename = filename[1:]
 
         files = self._mappedSdList()
         file = files.get(filename)
 
-        if (
-            file is None
-            or self._selectedSdFile == file["path"]
-            or check_already_open
-        ):
-            self._send("open failed, File: %s." % filename)
-            return
-
         self._selectedSdFile = file["path"]
-        self._selectedSdFileSize = file["size"]        
+        self._selectedSdFileSize = file["size"]
         self._selectedSdJobID = file["jobid"]
 
         if self._settings.get_boolean(["includeFilenameInOpened"]):
@@ -1551,18 +1589,39 @@ class TierPrinter(object):
             self._send("File opened")
         self._send("File selected")
 
-    def _startSdPrint(self):
-        if self._selectedSdFile is not None:
-            if self._sdPrinter is None:
-                self._sdPrinting = True                
+    def _selectSdFileByJobID(self, jobid, check_already_open=False):
+        
+        self._selectedSdFile = None
+        self._selectedSdFilePos = 0
+        self._selectedSdFileSize = 0
+        self._selectedSdJobID = 0
+        
+        files = self._mappedSdList()
+        for f in files:
+            file = files.get(f)
+            if file["jobid"] == jobid:
+                self._selectedSdFile = file["path"]
+                self._selectedSdFileSize = file["size"]
+                self._selectedSdJobID = file["jobid"]
+
+                if self._settings.get_boolean(["includeFilenameInOpened"]):
+                    self._send("File opened: %d  Size: %d" % (jobid, self._selectedSdFileSize))
+                else:
+                    self._send("File opened")
+                self._send("File selected")
+
+    def _startSdPrint(self):        
+        if self._selectedSdFile is not None:            
+            if self._sdPrinter is None:                
+                self._sdPrinting = True
                 self._sdPrinter = threading.Thread(target=self._sdPrintingWorker)
                 self._sdPrinter.start()
             else:
                 #Resume                
-                self._ws.resume_print(self._sn, self._selectedSdJobID)
+                self._ws.resume_print(self._sn, self._selectedSdJobID)                
         self._canceling = False
         self._sdPrintingSemaphore.set()
-
+        
     def _pauseSdPrint(self):
         if self._canceling:
             self._ws.stop_print(self._sn)
@@ -1571,11 +1630,9 @@ class TierPrinter(object):
         self._sdPrintingSemaphore.clear()
 
     def _setSdPos(self, pos):        
-        #self._newSdFilePos = pos
-        self._newSdFilePos = self._ws.get_printe_progress(self._sn)
-
-    def _reportSdStatus(self):
-        #debug needing add printing status.
+        self._newSdFilePos = pos
+        
+    def _reportSdStatus(self):        
         if self._sdPrinter is not None and self._sdPrintingSemaphore.is_set:
             self._send(
                 "SD printing byte %d/%d"
@@ -1584,7 +1641,7 @@ class TierPrinter(object):
         else:
             self._send("Not SD printing")
 
-    def _generateTemperatureOutput(self):       
+    def _generateTemperatureOutput(self):
         # type: () -> str
         if self._settings.get_boolean(["repetierStyleTargetTemperature"]):
             template = self._settings.get(["m105NoTargetFormatString"])
@@ -1610,7 +1667,8 @@ class TierPrinter(object):
                     continue
                 temps["T{}".format(i)] = (self.temp[i], self.targetTemp[i])
 
-            if self._settings.get_boolean(["hasBed"]):
+            #if self._settings.get_boolean(["hasBed"]):
+            if self.bedTargetTemp > 0:
                 temps["B"] = (self.bedTemp, self.bedTargetTemp)
 
             if self._settings.get_boolean(["hasChamber"]):
@@ -1623,7 +1681,8 @@ class TierPrinter(object):
             
             temps[heater] = (self.temp[0], self.targetTemp[0])
 
-            if self._settings.get_boolean(["hasBed"]):
+            #if self._settings.get_boolean(["hasBed"]):
+            if self.bedTargetTemp > 0:
                 temps["B"] = (self.bedTemp, self.bedTargetTemp)
             
             if self._settings.get_boolean(["hasChamber"]):
@@ -1653,20 +1712,15 @@ class TierPrinter(object):
         # type: (str, bool, bool) -> None        
         only_wait_if_higher = True
         tool = 0
-        # toolMatch = re.search(r"T([0-9]+)", line)
-        # if toolMatch:
-        #     tool = int(toolMatch.group(1))
-
-        # if tool >= self.temperatureCount:
-        #     return
-        
-        for tool in range(0, self._ws.get_printer_extruderCount(self._sn)):
-            self.targetTemp[tool] = self._ws.get_extruder_temperature(self._sn, tool)
-        
-            if wait:
-                self._waitForHeatup("tool%d" % tool, only_wait_if_higher)
-            if self._settings.get_boolean(["repetierStyleTargetTemperature"]):
-                self._send("TargetExtr%d:%d" % (tool, self.targetTemp[tool]))
+        pStatus = self._ws.get_printer_status(self._sn)
+        tools = self._ws.get_printer_extruderCount(self._sn)
+        if pStatus is not None:
+            for tool in range(0, tools):                
+                self.targetTemp[tool] = getattr(pStatus, "nTargetTemp" + str(tool+1))
+                if wait:
+                    self._waitForHeatup("tool%d" % tool, only_wait_if_higher)
+                if self._settings.get_boolean(["repetierStyleTargetTemperature"]):
+                    self._send("TargetExtr%d:%d" % (tool, self.targetTemp[tool]))
         
         only_wait_if_higher = False
 
@@ -1677,7 +1731,10 @@ class TierPrinter(object):
 
         only_wait_if_higher = True
         
-        self.bedTargetTemp = float(self._ws.get_bed_temperature(self._sn))
+        pStatus = self._ws.get_printer_status(self._sn)
+        if pStatus is not None:
+            self.bedTargetTemp = float(pStatus.nTargetPlatTemp)
+                        
         only_wait_if_higher = False
         
         if wait:
@@ -1839,30 +1896,35 @@ class TierPrinter(object):
                     pass
 
     def _home(self, line):
-        x = y = z = e = None
-
-        if "X" in line:
-            x = True
-        if "Y" in line:
-            y = True
-        if "Z" in line:
-            z = True
-        if "E" in line:
-            e = True
-
-        if x is None and y is None and z is None and e is None:
-            self._lastX = self._lastY = self._lastZ = self._lastE[
-                self.currentExtruder
-            ] = 0
+        if self._sdPrinting:
+            self._send("// action:notification Printing from SD")
         else:
-            if x:
-                self._lastX = 0
-            if y:
-                self._lastY = 0
-            if z:
-                self._lastZ = 0
-            if e:
-                self._lastE = 0
+            self._ws.init_printer(self._sn)
+            
+            x = y = z = e = None
+
+            if "X" in line:
+                x = True
+            if "Y" in line:
+                y = True
+            if "Z" in line:
+                z = True
+            if "E" in line:
+                e = True
+
+            if x is None and y is None and z is None and e is None:
+                self._lastX = self._lastY = self._lastZ = self._lastE[
+                    self.currentExtruder
+                ] = 0
+            else:
+                if x:
+                    self._lastX = 0
+                if y:
+                    self._lastY = 0
+                if z:
+                    self._lastZ = 0
+                if e:
+                    self._lastE = 0
 
     def _writeSdFile(self, filename):
         # type: (str) -> None
@@ -1900,55 +1962,22 @@ class TierPrinter(object):
     def _sdPrintingWorker(self):
         self._selectedSdFilePos = 0
         try:
-            # with io.open(self._selectedSdFile, "rt", encoding="utf-8") as f:
-            #     for line in iter(f.readline, ""):
-            #         if self._killed or not self._sdPrinting:
-            #             break
-
-            #         # reset position if requested by client
-            #         if self._newSdFilePos is not None:
-            #             f.seek(self._newSdFilePos)
-            #             self._newSdFilePos = None
-
-            #         # read current file position
-            #         self._selectedSdFilePos = f.tell()
-
-            #         # if we are paused, wait for resuming
-            #         self._sdPrintingSemaphore.wait()
-            #         if self._killed or not self._sdPrinting:
-            #             break
-
-            #         # set target temps
-            #         if "M104" in line or "M109" in line:
-            #             self._parseHotendCommand(line, wait="M109" in line)
-            #         elif "M140" in line or "M190" in line:
-            #             self._parseBedCommand(line, wait="M190" in line)
-            #         elif (
-            #             line.startswith("G0")
-            #             or line.startswith("G1")
-            #             or line.startswith("G2")
-            #             or line.startswith("G3")
-            #         ):
-            #             # simulate reprap buffered commands via a Queue with maxsize which internally simulates the moves
-            #             self.buffered.put(line)
-
-            self._ws.start_job(self._sn, self._selectedSdJobID)
+            self._ws._upload_sn = self._sn
+            if self._sdPrint_needStart:                
+                self._ws.start_job(self._sn, self._selectedSdJobID)
             counter = 0
-            while not self._ws._isPrinting and self._ws._lastError is None and counter < 5:
+            while not self._ws._isPrinting and self._ws._lastError is None and counter < 60:
                 time.sleep(1)
                 counter += 1
-            
-            while not self._killed and self._sdPrinting and self._ws._isPrinting:
+
+            while (not self._killed and self._sdPrinting) and self._ws._isPrinting:
 
                 # reset position if requested by client
                 if self._newSdFilePos is not None:
                     self._newSdFilePos = None
 
-                progress = self._ws.get_printe_progress(self._sn)
-                
-                self._logger.info("progress: " + str(progress))
-
-                self._selectedSdFilePos = self._selectedSdFileSize * progress/100
+                progress = self._ws.get_printe_progress(self._sn)                
+                self._selectedSdFilePos = self._selectedSdFileSize * progress /100
 
                 self._sdPrintingSemaphore.wait()
                 if self._killed or not self._sdPrinting:
@@ -1956,11 +1985,11 @@ class TierPrinter(object):
                         self._ws.stop_print(self._sn)
                     break
                 
-                # set target temps                
+                # set target temps
                 self._parseHotendCommand("", wait="M109" in "")
                 self._parseBedCommand("", wait="M190" in "")
 
-                time.sleep(1)
+                time.sleep(4)
                 
         except AttributeError:
             if self.outgoing is not None:
@@ -1975,6 +2004,7 @@ class TierPrinter(object):
             self._selectedSdFilePos = 0
             self._sdPrinting = False
             self._sdPrinter = None
+            self._listSd()            
 
     def _waitForHeatup(self, heater, only_wait_if_higher):
         # type: (str, bool) -> None
@@ -2023,13 +2053,7 @@ class TierPrinter(object):
         if filename.startswith("/"):
             filename = filename[1:]
         files = self._mappedSdList()
-        file = files.get(filename)
-        # if (
-        #     file is not None
-        #     and os.path.exists(file["path"])
-        #     and os.path.isfile(file["path"])
-        # ):
-        #     os.remove(file["path"])
+        file = files.get(filename)        
         
         if file is not None and file["jobid"] is not None:
             self._ws.delete_job(self._sn, file["jobid"], 0)
@@ -2047,19 +2071,19 @@ class TierPrinter(object):
                 continue
             
             counter = 0
-            curTem = float(self._ws.get_extruder_temperature(self._sn, i))
-            while curTem < 0 and counter < self.timeout:
+            curTem = self._ws.get_extruder_temperature(self._sn, i)
+            while curTem < 0 and counter < 30:
                 time.sleep(1)
-                curTem = float(self._ws.get_extruder_temperature(self._sn, i))
+                curTem = self._ws.get_extruder_temperature(self._sn, i)
                 counter += 1
             if curTem < 0:
-                self._kill()                
+                self._logger.critical("No extruder temperature. killed")                
                 self.temp[i] = float("0.0")
             else:
                 self.temp[i] = curTem
-        
-        self.bedTemp = float(self._ws.get_bed_temperature(self._sn))
 
+        self.bedTemp = float(self._ws.get_bed_temperature(self._sn))
+        
         # Not support yet.20210617
         self.chamberTemp = float("0.0")
 
@@ -2107,7 +2131,7 @@ class TierPrinter(object):
         self._send("//action:prompt_end")
 
     def write(self, data):
-        # type: (bytes) -> int
+        # type: (bytes) -> int        
         data = to_bytes(data, errors="replace")
         u_data = to_unicode(data, errors="replace")
 
@@ -2217,6 +2241,8 @@ class TierPrinter(object):
         # type: (str, Any, Any) -> str
         return "Error: {}".format(self._errors.get(error).format(*args, **kwargs))
 
+    def _motorsOff(self):
+        self._ws.motors_off(self._sn)
 
 class TierEEPROM:
     def __init__(self, data_folder):
@@ -2363,7 +2389,6 @@ class TierEEPROM:
     def eeprom(self):
         return self._eeprom
 
-
 # noinspection PyUnresolvedReferences
 class CharCountingQueue(queue.Queue):
     def __init__(self, maxsize, name=None):
@@ -2428,3 +2453,4 @@ class CharCountingQueue(queue.Queue):
 
     def _will_it_fit(self, item):
         return self.maxsize - self._qsize() >= self._len(item)
+        

@@ -8,8 +8,7 @@ authors:
 - Simon Cheung
 license: AGPLv3
 
-# TODO
-date: today's date in format YYYY-MM-DD, e.g. 2015-04-21
+date: 2021-07-20
 
 homepage: https://github.com/zhangximin/OctoPrint-Tiertime
 source: https://github.com/zhangximin/OctoPrint-Tiertime
@@ -82,8 +81,7 @@ compatibility:
   - linux
   - windows
   - macos
-  - freebsd
-
+  
   # Compatible Python version
   #
   # Plugins should aim for compatibility for Python 2 and 3 for now, in which case the value should be ">=2.7,<4".
@@ -94,7 +92,7 @@ compatibility:
   # is EOL), leave at ">=2.7,<3" - be aware that your plugin will not be allowed to register on the
   # plugin repository if it only support Python 2.
 
-  python: ">=2.7,<3"
+  python: ">=3,<4"
 
 ---
 
