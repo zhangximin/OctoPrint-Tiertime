@@ -13,3 +13,18 @@ or manually using this URL:
 ## Configuration
 
 Set wandServer websocket address at OctoPrint Plugin Settings.
+
+In octopi, it would be ws://localhost:3333
+
+## Install WandServer
+
+### *[Run in RaspberryPi terminal]*
+
+- wget https://github.com/zhangximin/OctoPrint-Tiertime/releases/download/v0.1.5-alpha/WandServer_0.1.5.zip
+
+- unzip ./WandServer_0.1.5.zip
+
+-  sudo vi /etc/rc.local        [Need password]
+
+#### add this line at the end of file /ettc/rc.local before last line of "exit 0"
+- /home/pi/WandServer/startup.sh

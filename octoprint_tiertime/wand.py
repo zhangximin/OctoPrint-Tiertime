@@ -580,7 +580,7 @@ class wandServer:
             
             counter = 0
             printer_status = self.get_printer_status(sn)
-            while printer_status is None and counter < self._timeout:
+            while printer_status is None and counter < self._timeout and self.get_printer(sn) is not None:
                 self._logger.info("Waiting printer status ...... " + str(counter))
                 time.sleep(1)                
                 printer_status = self.get_printer_status(sn)
@@ -616,6 +616,7 @@ class wandServer:
             self.refreshPrinterStatus()
         else:
             self._lastError =  msg
+            self.remove_printer(sn)
         
     def cb_usbconnect(self, obj):
         self._logger.info("cb_usbconnect :" + json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': ')))
@@ -627,6 +628,7 @@ class wandServer:
             self.refreshPrinterStatus()
         else:
             self._lastError =  msg
+            self.remove_printer(sn)
     
     def get_tier_printer_status(self, sn) :
         tPrinter = self.get_printer(sn)
