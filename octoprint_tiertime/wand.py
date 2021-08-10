@@ -277,7 +277,8 @@ class wandServer:
             "octoprint.plugins.tiertime.wandServer"
         )
 
-    def on_error(self, _ws_socket, error):
+    def on_error(self, error):
+        self.connecting = False
         self._lastError = error
         self._logger.critical("-------Error----------")
         self._logger.critical(error)
@@ -285,22 +286,24 @@ class wandServer:
             self._ws_socket.close()
             self._ws_socket = None
         
-    def on_open(self, _ws_socket):
+    def on_open(self):
         self._logger.info("Connected with wand server ...")
         self.connecting = False
     
-    def on_close(self, _ws_socket):
+    def on_close(self):        
         self._ws_socket = None
 
-    def on_message(self, _ws_socket, message):        
+    def on_message(self, message):        
         try:            
             dataJson = json.loads(message)            
             if "reply" in dataJson:                
                 func = dataJson["receipted"]["cmd"]                
                 if func == "exec" :
                     func = dataJson["receipted"]["action"]
-                if dataJson["reply"]["status"] != 2 :                    
+                if dataJson["reply"]["status"] != 2 :
                     class_method = getattr(self, 'cb_'+func)(dataJson)
+                else:
+                    self._logger.critical("Receiveing unknown reponses from WandServer error!")
 
         except ValueError :
             self._logger.critical("Error response from WandServer!")            
@@ -310,36 +313,27 @@ class wandServer:
             self._logger.critical(e)
 
     def close(self):
-        if self._settings.get(["wand_host"]) is not None:
+        self.connecting = False
+        if self._ws_socket is not None:
             self._ws_socket.close()
 
     def connect(self):
         if not self.connecting :
             self._logger.info("Connecting to "+self._settings.get(["wand_host"]))
             self.connecting = True
+            websocket.setdefaulttimeout(self._timeout)
             self._ws_socket = websocket.WebSocketApp(self._settings.get(["wand_host"]),
                                 on_open=self.on_open,
                                 on_message=self.on_message,
                                 on_error=self.on_error,
-                                on_close=self.on_close)
+                                on_close=self.on_close)            
             self.thread = Thread(target = self._ws_socket.run_forever , args = (None , None , 60, 30))            
             self.thread.start();
             
     def send_command(self,cmd):        
         if self._ws_socket is None:
-            self.connect()
+            self.connect()       
         
-        # c = 0
-        # while c < self._timeout and self.connecting :
-        #     self._logger.debug('Connecting ...')
-        #     time.sleep(1)
-        #     c += 1
-        
-        # if self.connecting :
-        #     # Connecting timeout.
-        #     self._logger.debug("Connecting timeout")
-        #     self.connecting = False
-        #     return
         if self._ws_socket is not None and not self.connecting:
             self._ws_socket.send(cmd)
 

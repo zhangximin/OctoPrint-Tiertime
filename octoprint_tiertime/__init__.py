@@ -111,15 +111,15 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
                 )
                 self._settings.global_remove(["devel", "Tiertime"])
 
-    def get_assets(self):
-        # Define your plugin's asset files to automatically include in the
-        # core UI here.
-        #"js": ["js/tiertime.js"],
-        # "css": ["css/tiertime.css"],
-        # "less": ["less/tiertime.less"]
-        return {
+    # def get_assets(self):
+    #     # Define your plugin's asset files to automatically include in the
+    #     # core UI here.
+    #     #"js": ["js/tiertime.js"],
+    #     # "css": ["css/tiertime.css"],
+    #     # "less": ["less/tiertime.less"]
+    #     return {
             
-        }
+    #     }
 
     ##~~ Softwareupdate hook
 
@@ -209,6 +209,7 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             if g_ws is not None:
                 try:
                     g_ws.stop_action()
+                    g_ws.close()
                 finally:
                     pass
             return []
