@@ -26,5 +26,5 @@ In octopi, it would be ws://localhost:3333
 
 -  sudo vi /etc/rc.local        [Need password]
 
-#### add this line at the end of file /ettc/rc.local before last line of "exit 0"
+#### add this line at the end of file /etc/rc.local *before* the last line of "exit 0"
 - /home/pi/WandServer/startup.sh
