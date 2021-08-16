@@ -47,7 +47,7 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             "includeFilenameInOpened": False,
             "hasBed": True,
             "hasChamber": False,
-            "repetierStyleTargetTemperature": False,
+            "repetierStyleTargetTemperature": True,
             "okBeforeCommandOutput": False,
             "smoothieTemperatureReporting": True,
             "klipperTemperatureReporting": False,
@@ -55,7 +55,7 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             "sdFiles": {"size": True, "longname": True},
             "throttle": 0.01,
             "sendWait": True,
-            "waitInterval": 1.0,
+            "waitInterval": 2.0,
             "rxBuffer": 64,
             "commandBuffer": 4,
             "supportM112": True,
@@ -66,7 +66,7 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             "firmwareName": "Tiertime Printer 1.0",
             "sharedNozzle": False,
             "sendBusy": False,
-            "busyInterval": 2.0,
+            "busyInterval": 4.0,
             "simulateReset": True,
             "resetLines": ["start", "Tiertime: Tiertime Printers!", "\x80", "SD card ok"],
             "preparedOks": [],
@@ -181,19 +181,13 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
         global g_ws
         if self._settings.get_boolean(["enabled"]):            
             if g_ws is None:                
-                g_ws = wandServer(self._settings, self._identifier)                
+                g_ws = wandServer(self._settings, self._identifier)
                 g_ws.connect()
-                g_ws.start_action()
-            else:
-                if not g_ws._connecting_printer:
-                    g_ws.refreshPrinters()
+                time.sleep(0.5)
+                g_ws.start_action() 
 
-                    counter = 0
-                    # Not sure if we should wait here. 2021061
-                    while ( g_ws.printer_list is None or len(g_ws.printer_list) < 1 ) and counter < g_ws._timeout:
-                        time.sleep(1)
-                        counter += 1
-
+            g_ws.refreshPrinters()
+                            
             if g_ws is not None and g_ws.printer_list is not None and len(g_ws.printer_list) > 0:
                 reValue = []
                 for sn in g_ws.printer_list.keys():
@@ -201,7 +195,7 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
                     if tPrinter.accessCtrl == "1":
                         reValue.append("TIER-" + tPrinter.SN + u"\U0001F512")
                     else:
-                        reValue.append("TIER-"+  tPrinter.SN)
+                        reValue.append("TIER-"+  tPrinter.SN)                
                 return reValue
             else :
                 return []

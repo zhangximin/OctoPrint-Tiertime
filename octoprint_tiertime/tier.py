@@ -75,12 +75,13 @@ class TierPrinter(object):
         )
 
         self._settings = settings
+        self._canceling = False
         
         self._ws = g_ws
         self._port = port
         self._sn = port[5:len(port)]        
         self._ws.connect_tier_printer(self._sn)
-        
+                
         self._faked_baudrate = faked_baudrate
         self._plugin_data_folder = data_folder
         
@@ -230,20 +231,7 @@ class TierPrinter(object):
         self._triggerResendWithTimeoutAt105 = True
         self._triggerResendWithMissingLinenoAt110 = True
         self._triggerResendWithChecksumMismatchAt115 = True
-
-        self._canceling = False
-
-        counter = 0
-        while counter < 60 and self.extruderCount < 1:
-            time.sleep(1)
-            self.extruderCount = self._ws.get_printer_extruderCount(self._sn)
-            counter += 1
-        if self.extruderCount < 1:
-            #No status, connect error!
-            self._logger.critical("Get Printer Status error!")
-            self._kill()
-            return None
-
+        
         readThread = threading.Thread(
             target=self._processIncoming,
             name="octoprint.plugins.tiertime.wait_thread",
@@ -591,7 +579,6 @@ class TierPrinter(object):
                 self._ws._lastError = None
 
         self._logger.info("Closing down read loop")
-
         self._ws.disconnect_tier_printer(self._sn)
 
     ##~~ command implementations
@@ -801,6 +788,7 @@ class TierPrinter(object):
                 self._send("echo:")
 
     def _gcode_M155(self, data):
+        self._logger.info("gcode M155---------------------")
         # type: (str) -> None
         matchS = re.search(r"S([0-9]+)", data)
         if matchS is not None:
@@ -815,6 +803,7 @@ class TierPrinter(object):
                 self._temperature_reporter.start()
             else:
                 self._temperature_reporter = None
+        self._logger.info("gcode M155---------------------end")
 
     def _gcode_M220(self, data):
         # type: (str) -> None
@@ -1895,11 +1884,47 @@ class TierPrinter(object):
                 except ValueError:
                     pass
 
+    def t_initialize_printer(self):        
+        counter = 0
+        printer_status = self._ws.get_printer_status(self._sn)
+        while printer_status is None and counter < 30:
+            self._logger.info("Waiting printer status ...... " + str(counter))
+            time.sleep(1)                
+            printer_status = self.get_printer_status(self._sn)
+            counter += 1
+        
+        if printer_status is not None and printer_status.printerStatus not in (2, 3, 11, 13, 14, 27):
+            self._logger.info("Initializing printer ...... ")
+            self.init_printer(self._sn)
+            counter = 0
+            # Accouding to the lastest product info UP600, we need 60 seconds to init.
+            while printer_status is not None and printer_status.printerStatus < 1 and counter < 60:
+                time.sleep(1)
+                printer_status = self.get_printer_status(self._sn)
+                counter += 1
+                
+            if printer_status is not None and printer_status.printerStatus == 1:
+                self._logger.info("Printer initialized.")                    
+            else:
+                self._logger.info("Printer initialize error:")                    
+                if printer_status is not None:
+                    self._lastError = str(printer_status.strPrinterStatus) + ":" + printer_status.strPrinterStatus
+                    self._logger.info(str(printer_status.strPrinterStatus) + ":" + printer_status.strPrinterStatus)
+        elif printer_status is not None:                
+            self._lastError = printer_status.strPrinterStatus
+        else:
+            self._lastError = "Connection error."
+    
+    def initialize_printer(self):
+        t_init = threading.Thread(target=self.t_initialize_printer)        
+        t_init.start()
+
     def _home(self, line):
         if self._sdPrinting:
             self._send("// action:notification Printing from SD")
         else:
-            self._ws.init_printer(self._sn)
+            #self._ws.init_printer(self._sn)
+            self.initialize_printer()
             
             x = y = z = e = None
 

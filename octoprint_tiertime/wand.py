@@ -262,8 +262,9 @@ class wandServer:
         self._upload_jobid = 0
         self._identifier = identifier
         self._timeout = 10
-        self._connecting_printer = False
-
+        self._busy = False
+        self._if_refreshPrinters = False
+        
         self._settings = settings        
         self.connecting = False
         self.thread = None        
@@ -332,7 +333,7 @@ class wandServer:
             
     def send_command(self,cmd):        
         if self._ws_socket is None:
-            self.connect()       
+            self.connect()
         
         if self._ws_socket is not None and not self.connecting:
             self._ws_socket.send(cmd)
@@ -439,10 +440,13 @@ class wandServer:
     def cb_searchallprinters(self, obj) :        
         self.send_command("{\"cmd\": \"getallprinters\"}")
 
-    def remove_printer(self, sn):       
-        self.printer_list.pop(sn, None)
+    def remove_printer(self, sn):
+        del self.printer_list[sn]
     
-    def	cb_getallprinters(self, obj) :        
+    def	cb_getallprinters(self, obj) :
+        #self._logger.info("cb_getallprinters :" + json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': ')))
+        self._if_refreshPrinters = False
+        self._busy = False
         result = obj["reply"]["result"]
         netList = result["net"]
         usbList = result["usb"]
@@ -546,81 +550,52 @@ class wandServer:
         self._logger.warning(msg)
 
     def get_printer(self, sn) -> tiertime_printer_item:
-        reValue = None
-        try:
-            self.lock.acquire()        
+        # reValue = None
+        # try:
+        #     self.lock.acquire()        
         
-            reValue = self.printer_list.get(sn, None)
-            counter = 0
-            while reValue is None and counter < 5:
-                time.sleep(1)
-                reValue = self.printer_list.get(sn, None)
-                counter += 1
-        finally:
-            self.lock.release()
-        
-        return reValue
+        #     reValue = self.printer_list.get(sn, None)
+        #     counter = 0
+        #     while reValue is None and counter < 5:
+        #         time.sleep(1)
+        #         reValue = self.printer_list.get(sn, None)
+        #         counter += 1
+        # finally:
+        #     self.lock.release()
+                    
+        # return reValue
+        return self.printer_list.get(sn, None)
     
     def connect_tier_printer(self, sn):
+        counter = 0
+        while self._if_refreshPrinters and counter < 20:
+            time.sleep(1)
+            counter += 1
+
         self._lastError = None
         self._upload_sn = sn
         tPrinter = self.get_printer(sn)
         if tPrinter is not None:
             if tPrinter.linkedType == "USB":
-                self._connecting_printer = True
+                self._busy = True
                 self.send_command("{\"cmd\": \"usbconnect\", \"sn\": \""+sn+"\", \"pwd\":\"\"}")
             elif tPrinter.linkedType == "Ethernet":
-                self._connecting_printer = True
+                self._busy = True
                 self.send_command("{\"cmd\": \"netconnect\", \"sn\": \""+sn+"\", \"pwd\": \"\"}")
             else:
                 self._logger.info("Already Connected.")
-
-            # Need waitting for status? 202107
-            #time.sleep(2)
-            
-            counter = 0
-            printer_status = self.get_printer_status(sn)
-            while printer_status is None and counter < self._timeout and self.get_printer(sn) is not None:
-                self._logger.info("Waiting printer status ...... " + str(counter))
-                time.sleep(1)                
-                printer_status = self.get_printer_status(sn)
-                counter += 1
-            
-            if printer_status is not None and printer_status.printerStatus == 0:
-                self._logger.info("initializing printer ...... ")
-                self.init_printer(sn)
-                counter = 0
-                # Accouding to the lastest product info UP600, we need 60 seconds to init.
-                while printer_status is not None and printer_status.printerStatus < 1 and counter < 60:
-                    time.sleep(1)
-                    printer_status = self.get_printer_status(sn)
-                    counter += 1
-                    
-                if printer_status is not None and printer_status.printerStatus == 1:
-                    self._logger.info("Printer initialized.")                    
-                else:
-                    self._logger.info("Printer initialize error:")                    
-                    if printer_status is not None:
-                        self._lastError = str(printer_status.strPrinterStatus) + ":" + printer_status.strPrinterStatus
-                        self._logger.info(str(printer_status.strPrinterStatus) + ":" + printer_status.strPrinterStatus)
-            elif printer_status is not None and printer_status.printerStatus != 1:                
-                self._lastError = printer_status.strPrinterStatus
-            
-    def cb_netconnect(self, obj):
-        self._logger.info("cb_netconnect :" + json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': ')))
-        self._connecting_printer = False
+        
+    def cb_netconnect(self, obj):        
+        self._busy = False
         status = obj["reply"]["status"]
         msg = obj["reply"]["message"]
         sn = str(obj["receipted"]["sn"])
-        if status == 0:
-            self.refreshPrinterStatus()
-        else:
+        if status != 0:
             self._lastError =  msg
-            self.remove_printer(sn)
+        self.refreshPrinters()
         
-    def cb_usbconnect(self, obj):
-        self._logger.info("cb_usbconnect :" + json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': ')))
-        self._connecting_printer = False
+    def cb_usbconnect(self, obj):        
+        self._busy = False
         status = obj["reply"]["status"]
         msg = obj["reply"]["message"]
         sn = str(obj["receipted"]["sn"])
@@ -665,8 +640,8 @@ class wandServer:
         if status != 0:
             self._lastError = obj["reply"]["message"]
 
-    def remove_printer_status(self, sn):        
-        self.printer_status_list.pop(sn, None)
+    def remove_printer_status(self, sn):
+        del self.printer_status_list[sn]
 
     def get_printer_status(self, sn) -> tiertime_printer_status_item:
         reValue = None
@@ -689,7 +664,7 @@ class wandServer:
         if t_status is not None:
             #return 2 if "/" in t_status.materialName else 1
             return t_status.nNozzleNum
-        return 0
+        return 1
 
     def get_extruder_temperature(self, sn, extruderIndex) -> float:
         t_status = self.get_printer_status(sn)
@@ -723,11 +698,16 @@ class wandServer:
         return 0
         
     def refreshPrinters(self) :        
-        self.send_command("{\"cmd\": \"searchallprinters\"}");
+        if not self._if_refreshPrinters:
+            self.t_refreshPrinters()
 
-    def refreshPrinterStatus(self) :
-        if not self._connecting_printer:
-            self.send_command("{\"cmd\": \"getallprintstatus\"}");
+    def t_refreshPrinters(self) :        
+        self._if_refreshPrinters = True
+        self._busy = True
+        self.send_command("{\"cmd\": \"searchallprinters\"}")
+
+    def refreshPrinterStatus(self) :        
+        self.send_command("{\"cmd\": \"getallprintstatus\"}")
 
     def	cb_getallprintstatus(self, obj) :
         self._logger.info("cb_getallprintstatus :" + json.dumps(obj, sort_keys=True, indent=4, separators=(',', ': ')))
@@ -753,11 +733,12 @@ class wandServer:
 
 ####################################################
 
-    def action(self) :        
-        self.refreshPrinterStatus()
+    def action(self) :
+        if not self._busy:
+            self.refreshPrinterStatus()
     
-    def start_action(self) :        
-        if self.StartTime is None:
+    def start_action(self) :
+        if self.inter is None:
             self.StartTime=time.time()
 
             # do action every 4s
