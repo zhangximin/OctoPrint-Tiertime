@@ -23,14 +23,17 @@ In octopi, it would be ws://localhost:3333
 
 ### *[Run in RaspberryPi terminal]*
 
-- wget http://github.com/zhangximin/OctoPrint-Tiertime/releases/download/v0.1.5-alpha/WandServer_rasp3_0.1.5.zip
+- wget http://github.com/zhangximin/OctoPrint-Tiertime/releases/download/v0.1.6-alpha/WandServer_rasp3_0.1.6.zip
 
-- unzip ./WandServer_0.1.5.zip
+- unzip ./WandServer_0.1.6.zip
 
 - sudo vi /etc/rc.local        [Need password]
 
 #### add this line at the end of file /etc/rc.local *before* the last line of "exit 0"
 - /home/pi/WandServer/startup.sh
+
+#### reboot raspberry pi.
+- sudo reboot
 
 ---
 ## ⚠️ Upload NOT Supported  ⚠️
