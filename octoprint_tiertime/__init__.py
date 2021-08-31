@@ -1,41 +1,58 @@
 # coding=utf-8
-from __future__ import absolute_import, unicode_literals, division, print_function
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+from typing import Counter
 
 __author__ = "Simon Cheung <simon@tiertime.net>"
 __license__ = "GNU Affero General Public License http://www.gnu.org/licenses/agpl.html"
-__copyright__ = "Copyright (C) 2021 Tiertime Co. Ltd. - Released under terms of the AGPLv3 License"
+__copyright__ = (
+    "Copyright (C) 2021 Tiertime Co. Ltd. - Released under terms of the AGPLv3 License"
+)
 
-import octoprint.plugin
-import time
-import threading
 import logging
 import logging.handlers
-from os import defpath
+import threading
+import time
 from datetime import datetime
+from os import defpath
+
+import octoprint.plugin
 from octoprint.logging.handlers import CleaningTimedRotatingFileHandler
 from octoprint.printer.estimation import PrintTimeEstimator
 from octoprint.settings import settings
-from .wand import wandServer
+
 from .tier import TierPrinter
+from .wand import wandServer
 
 g_ws = None
 
-class TiertimePlugin(octoprint.plugin.SettingsPlugin,    
-    octoprint.plugin.TemplatePlugin, octoprint.plugin.RestartNeedingPlugin
+
+class TiertimePlugin(
+    octoprint.plugin.SettingsPlugin,
+    octoprint.plugin.TemplatePlugin,
+    octoprint.plugin.AssetPlugin,
+    octoprint.plugin.RestartNeedingPlugin,
 ):
     def __init__(self):
         global g_ws
-        super().__init__()        
+        super().__init__()
         g_ws = None
-        self._logger = logging.getLogger(
-            "octoprint.plugins.tiertime"
-        )
+        self._logger = logging.getLogger("octoprint.plugins.tiertime")
         self._current_sn = 0
         self._serial_obj = None
 
-    def get_template_configs(self):
-        return [{"type": "settings", "custom_bindings": False}]
+    def get_assets(self):
+        return dict(
+            js=['js/tiertime.js', 'js/main.js', 'js/tools.js', 'js/callbackfunctions.js', 'js/uicontroller.js'],
+            css=['css/tiertime.css', 'css/style.css'],
+        )
     
+    def get_template_configs(self):
+        return [
+            dict(type="tab", cusom_binding=False),
+            dict(type="settings", custom_binding=False)
+        ]
+
     def get_settings_defaults(self):
         return {
             "enabled": False,
@@ -94,10 +111,11 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             "enable_eeprom": True,
             "support_M503": True,
             "resend_ratio": 0,
+            "wand_host": "ws://localhost:3333",
         }
 
     def get_settings_version(self):
-        return 1    
+        return 1
 
     def on_settings_migrate(self, target, current):
         if current is None:
@@ -106,20 +124,8 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
                 self._logger.info(
                     "Migrating settings from devel.Tiertime to plugins.Tiertime ..."
                 )
-                self._settings.global_set(
-                    ["plugins", "Tiertime"], config, force=True
-                )
+                self._settings.global_set(["plugins", "Tiertime"], config, force=True)
                 self._settings.global_remove(["devel", "Tiertime"])
-
-    # def get_assets(self):
-    #     # Define your plugin's asset files to automatically include in the
-    #     # core UI here.
-    #     #"js": ["js/tiertime.js"],
-    #     # "css": ["css/tiertime.css"],
-    #     # "less": ["less/tiertime.less"]
-    #     return {
-            
-    #     }
 
     ##~~ Softwareupdate hook
 
@@ -131,13 +137,11 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             "tiertime": {
                 "displayName": "Tiertime",
                 "displayVersion": self._plugin_version,
-
                 # version check: github repository
                 "type": "github_release",
-                "user": "zhangximin",
+                "user": "Zhang Ximin",
                 "repo": "OctoPrint-Tiertime",
                 "current": self._plugin_version,
-
                 # update method: pip
                 "pip": "https://github.com/zhangximin/OctoPrint-Tiertime/archive/{target_version}.zip",
             }
@@ -150,6 +154,9 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             return None
 
         if port is None or not port.startswith("TIER"):
+            return None
+
+        if g_ws is None:
             return None
 
         seriallog_handler = CleaningTimedRotatingFileHandler(
@@ -179,25 +186,35 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
 
     def get_additional_port_names(self, *args, **kwargs):
         global g_ws
-        if self._settings.get_boolean(["enabled"]):            
-            if g_ws is None:                
+        if self._settings.get_boolean(["enabled"]):
+            if g_ws is None:
                 g_ws = wandServer(self._settings, self._identifier)
                 g_ws.connect()
                 time.sleep(0.5)
-                g_ws.start_action() 
-
+                g_ws.start_action()
+            
             g_ws.refreshPrinters()
-                            
-            if g_ws is not None and g_ws.printer_list is not None and len(g_ws.printer_list) > 0:
+            counter = 0
+            while counter < 2 and (
+                g_ws is None or g_ws.printer_list is None or len(g_ws.printer_list) < 1
+            ):
+                time.sleep(1)
+                counter += 1
+
+            if (
+                g_ws is not None
+                and g_ws.printer_list is not None
+                and len(g_ws.printer_list) > 0
+            ):
                 reValue = []
                 for sn in g_ws.printer_list.keys():
                     tPrinter = g_ws.get_printer(sn)
                     if tPrinter.accessCtrl == "1":
-                        reValue.append("TIER-" + tPrinter.SN + u"\U0001F512")
+                        reValue.append("TIER-" + tPrinter.SN + "\U0001F512")
                     else:
-                        reValue.append("TIER-"+  tPrinter.SN)                
+                        reValue.append("TIER-" + tPrinter.SN)
                 return reValue
-            else :
+            else:
                 return []
         else:
             if g_ws is not None:
@@ -210,18 +227,27 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
 
     # add tsk extention support.
     def get_extension_tree(self, *args, **kwargs):
-        return dict(
-            machinecode=dict(
-                tiertask=["tsk"]
-            )
-        )
+        return dict(machinecode=dict(tiertask=["tsk"]))
 
-    def upload_to_tier_printer(self, printer, filename, path, sd_upload_started, sd_upload_succeeded, sd_upload_failed, *args, **kwargs):
+    def upload_to_tier_printer(
+        self,
+        printer,
+        filename,
+        path,
+        sd_upload_started,
+        sd_upload_succeeded,
+        sd_upload_failed,
+        *args,
+        **kwargs
+    ):
         if self._settings.get_boolean(["enabled"]):
+
             def process():
                 g_ws.uploadfile(self._current_sn, path)
                 while g_ws._upload_progress != 0:
-                    self._logger.info("Uploading ......" + str(g_ws._upload_progress) + "%")
+                    self._logger.info(
+                        "Uploading ......" + str(g_ws._upload_progress) + "%"
+                    )
                     time.sleep(1)
                 if self._serial_obj is not None and g_ws._upload_jobid > 0:
                     self._serial_obj._selectSdFileByJobID(g_ws._upload_jobid)
@@ -248,21 +274,31 @@ class TiertimePlugin(octoprint.plugin.SettingsPlugin,
             )
 
         def get_total_seconds(self, stringHMS):
-            timedeltaObj = datetime.strptime(stringHMS, "%H:%M:%S") - datetime(1900,1,1)
+            timedeltaObj = datetime.strptime(stringHMS, "%H:%M:%S") - datetime(1900, 1, 1)
             return timedeltaObj.total_seconds()
 
-        def estimate(self, progress, printTime, cleanedPrintTime, statisticalTotalPrintTime, statisticalTotalPrintTimeType):
+        def estimate(
+            self,
+            progress,
+            printTime,
+            cleanedPrintTime,
+            statisticalTotalPrintTime,
+            statisticalTotalPrintTimeType,
+        ):
             global g_ws
             reValue = 0
-            #get estimate time from wandServer
+            # get estimate time from wandServer
             if g_ws is not None:
                 tStatus = g_ws.get_printer_status(g_ws._upload_sn)
-                if tStatus is not None and (tStatus.printerStatus == 2 or tStatus.printerStatus == 3):
+                if tStatus is not None and (
+                    tStatus.printerStatus == 2 or tStatus.printerStatus == 3
+                ):
                     reValue = self.get_total_seconds(tStatus.remainTime)
             return reValue, "estimate"
 
     def tiertime_estimator_factory(self, *args, **kwargs):
         return self.TiertimePrintTimeEstimator
+
 
 # If you want your plugin to be registered within OctoPrint under a different name than what you defined in setup.py
 # ("OctoPrint-PluginSkeleton"), you may define that here. Same goes for the other metadata derived from setup.py that
@@ -272,9 +308,10 @@ __plugin_name__ = "Tiertime"
 # Starting with OctoPrint 1.4.0 OctoPrint will also support to run under Python 3 in addition to the deprecated
 # Python 2. New plugins should make sure to run under both versions for now. Uncomment one of the following
 # compatibility flags according to what Python versions your plugin supports!
-#__plugin_pythoncompat__ = ">=2.7,<3" # only python 2
-__plugin_pythoncompat__ = ">=3,<4" # only python 3
-#__plugin_pythoncompat__ = ">=2.7,<4" # python 2 and 3
+# __plugin_pythoncompat__ = ">=2.7,<3" # only python 2
+__plugin_pythoncompat__ = ">=3,<4"  # only python 3
+# __plugin_pythoncompat__ = ">=2.7,<4" # python 2 and 3
+
 
 def __plugin_load__():
     global __plugin_implementation__

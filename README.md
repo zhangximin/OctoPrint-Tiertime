@@ -9,6 +9,9 @@ or manually using this URL:
 
     https://github.com/zhangximin/OctoPrint-Tiertime/archive/master.zip
 
+## Get Help
+
+If you encounter problems using the plugin or if you have an idea for a new feature please use the [issue tracker](https://github.com/zhangximin/OctoPrint-Tiertime/issues) and if applicable add the corresponding label.
 
 ## Configuration
 
@@ -24,7 +27,13 @@ In octopi, it would be ws://localhost:3333
 
 - unzip ./WandServer_0.1.5.zip
 
--  sudo vi /etc/rc.local        [Need password]
+- sudo vi /etc/rc.local        [Need password]
 
 #### add this line at the end of file /etc/rc.local *before* the last line of "exit 0"
 - /home/pi/WandServer/startup.sh
+
+---
+## ⚠️ Upload NOT Supported  ⚠️
+ONLY Upload to SD ! Tiertime printers not support gcode right now, so we send task file(*.tsk) to printer task list and print it.
+
+We'll implement Upload after gcode is ready.
