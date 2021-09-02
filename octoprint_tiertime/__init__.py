@@ -26,13 +26,11 @@ from .wand import wandServer
 
 g_ws = None
 
-
-class TiertimePlugin(
-    octoprint.plugin.SettingsPlugin,
+class TiertimePlugin(octoprint.plugin.SettingsPlugin,    
     octoprint.plugin.TemplatePlugin,
-    octoprint.plugin.AssetPlugin,
-    octoprint.plugin.RestartNeedingPlugin,
+    octoprint.plugin.RestartNeedingPlugin
 ):
+
     def __init__(self):
         global g_ws
         super().__init__()
@@ -41,21 +39,27 @@ class TiertimePlugin(
         self._current_sn = 0
         self._serial_obj = None
 
-    def get_assets(self):
-        return dict(
-            js=['js/tiertime.js', 'js/main.js', 'js/tools.js', 'js/callbackfunctions.js', 'js/uicontroller.js'],
-            css=['css/tiertime.css', 'css/style.css'],
-        )
+    def on_settings_save(self, data):
+        old_flag = self._settings.get(["wand_host"])
+        octoprint.plugin.SettingsPlugin.on_settings_save(self, data)
+        new_flag = self._settings.get(["wand_host"])
+
+        if (not self._settings.get_boolean(["enabled"])) or (old_flag != new_flag):
+            global g_ws
+            if g_ws is not None:
+                try:
+                    g_ws.stop_action()
+                    g_ws.close()
+                finally:
+                    g_ws = None
     
     def get_template_configs(self):
-        return [
-            dict(type="tab", cusom_binding=False),
-            dict(type="settings", custom_binding=False)
-        ]
+        return [{"type": "settings", "custom_bindings": False}]
 
     def get_settings_defaults(self):
         return {
             "enabled": False,
+            "wand_host": "ws://localhost:3333",
             "okAfterResend": False,
             "forceChecksum": False,
             "numExtruders": 1,
@@ -111,7 +115,6 @@ class TiertimePlugin(
             "enable_eeprom": True,
             "support_M503": True,
             "resend_ratio": 0,
-            "wand_host": "ws://localhost:3333",
         }
 
     def get_settings_version(self):

@@ -8,7 +8,6 @@ import threading
 import time
 from pathlib import Path
 from threading import Thread
-
 import websocket
 
 __author__ = "Simon Cheung <simon@tiertime.net>"
@@ -328,7 +327,7 @@ class wandServer:
 
         self._logger = logging.getLogger("octoprint.plugins.tiertime.wandServer")
 
-    def on_error(self, ws=None, error=None):
+    def on_error(self, ws, error):
         self.connecting = False
         self._lastError = error
         self._logger.critical("-------Error----------")
@@ -337,14 +336,14 @@ class wandServer:
             self._ws_socket.close()
             self._ws_socket = None
 
-    def on_open(self, ws=None):
+    def on_open(self, ws):
         self._logger.info("Connected with wand server ...")
         self.connecting = False
 
-    def on_close(self, ws=None):
+    def on_close(self, ws):
         self._ws_socket = None
 
-    def on_message(self, ws=None, message=None):
+    def on_message(self, ws, message):
         try:
             dataJson = json.loads(message)
             if "reply" in dataJson:
@@ -375,14 +374,11 @@ class wandServer:
         if not self.connecting:
             self._logger.info("Connecting to " + self._settings.get(["wand_host"]))
             self.connecting = True
-            websocket.setdefaulttimeout(self._timeout)
-            self._ws_socket = websocket.WebSocketApp(
-                self._settings.get(["wand_host"]),
-                on_open=self.on_open,
-                on_message=self.on_message,
-                on_error=self.on_error,
-                on_close=self.on_close,
-            )
+            self._ws_socket = websocket.WebSocketApp(self._settings.get(["wand_host"]),
+                on_open=lambda ws : self.on_open(ws),
+                on_message=lambda ws, message : self.on_message(ws, message),
+                on_error=lambda ws, error : self.on_error(ws, error),
+                on_close=lambda ws : self.on_close(ws))
             self.thread = Thread(
                 target=self._ws_socket.run_forever, args=(None, None, 60, 30)
             )

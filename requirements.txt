@@ -6,4 +6,7 @@
 # works as expected. Requirements can be found in setup.py.
 ###
 
+
+wsaccel
+websocket-client<1,>=0.57
 .
